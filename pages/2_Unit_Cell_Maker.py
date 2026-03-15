@@ -8,6 +8,16 @@ from ase.data import vdw_radii, atomic_numbers
 import matplotlib.pyplot as plt
 from ase.visualize.plot import plot_atoms
 
+# --- 鉄や銅など、半径データが無い金属のための安全な取得関数 ---
+def get_safe_radius(symbol):
+    anum = atomic_numbers.get(symbol, 6)
+    base_r = vdw_radii[anum]
+    if base_r is None or np.isnan(base_r):
+        # データがない場合は金属結合半径などにフォールバック
+        fallbacks = {'Fe': 1.4, 'Cu': 1.4, 'Mg': 1.6, 'Na': 1.8, 'Cl': 1.75, 'Cs': 2.6}
+        return fallbacks.get(symbol, 1.5)
+    return base_r
+
 def trim_mesh_to_box(mesh, box_size):
     try:
         if mesh is None or mesh.is_empty: return None
@@ -42,19 +52,23 @@ def create_crystal_mesh(atoms, style, scale, atom_r_scale, bond_r, cut_cell, sho
     positions = exp_atoms.get_positions() * scale; symbols = exp_atoms.get_chemical_symbols()
     meshes = []
     
+    is_space_filling = (style == "Space Filling (充填)")
+
     for pos, symbol in zip(positions, symbols):
         margin = 0.1 * scale
         if not (-margin<=pos[0]<=target_cell[0]+margin and -margin<=pos[1]<=target_cell[1]+margin and -margin<=pos[2]<=target_cell[2]+margin): continue
-        anum = atomic_numbers.get(symbol, 6); base_r = vdw_radii[anum] if vdw_radii[anum] else 1.5
-        r = base_r * scale * atom_r_scale if style=="Space Filling (充填)" else (0.25 if symbol=='H' else 0.4)*scale*atom_r_scale
-        subdiv = 4 if (cut_cell and style=="Space Filling (充填)") else 3
+        
+        base_r = get_safe_radius(symbol)
+        r = base_r * scale * atom_r_scale if is_space_filling else (0.25 if symbol=='H' else 0.4)*scale*atom_r_scale
+        subdiv = 4 if (cut_cell and is_space_filling) else 3
         sphere = trimesh.creation.icosphere(subdivisions=subdiv, radius=r); sphere.apply_translation(pos)
-        if style=="Space Filling (充填)" and cut_cell:
+        
+        if is_space_filling and cut_cell:
             trimmed = trim_mesh_to_box(sphere, target_cell)
             if trimmed: meshes.append(trimmed)
         else: meshes.append(sphere)
 
-    if style != "Space Filling (充填)":
+    if not is_space_filling:
         cutoff = 2.9 if "Fe" in symbols or "Cu" in symbols else (3.2 if "Na" in symbols else (4.3 if "Cs" in symbols else 1.7))
         i_l, j_l, d_l = neighbor_list('ijd', exp_atoms, cutoff=cutoff)
         bond_set = set(); [bond_set.add((i, j)) for i, j in zip(i_l, j_l) if i < j]
@@ -105,7 +119,19 @@ else:
 c1, c2 = st.columns([1, 1])
 with c1:
     st.subheader(sel)
-    try: fig, ax = plt.subplots(); ap=atoms.copy(); ap.rotate(15,'x'); ap.rotate(45,'y'); plot_atoms(ap, ax, radii=0.4, rotation=('0x,0y,0z')); ax.set_axis_off(); st.pyplot(fig)
+    try: 
+        fig, ax = plt.subplots()
+        ap=atoms.copy()
+        ap.rotate(15,'x'); ap.rotate(45,'y')
+        
+        # --- プレビュー画像をスタイルに連動させる修正 ---
+        if style == "Space Filling (充填)":
+            rad_list = [get_safe_radius(s) * atom_s * 0.5 for s in ap.get_chemical_symbols()]
+            plot_atoms(ap, ax, radii=np.array(rad_list), rotation=('0x,0y,0z'))
+        else:
+            plot_atoms(ap, ax, radii=0.4, rotation=('0x,0y,0z'))
+            
+        ax.set_axis_off(); st.pyplot(fig)
     except: pass
 with c2:
     if st.button("モデル作成 (OBJ形式)", type="primary"):
@@ -115,3 +141,5 @@ with c2:
                 p = "crystal.obj"; mesh.export(p, file_type='obj')
                 with open(p, "r") as f: d = f.read()
                 st.success("完了！"); st.download_button("OBJダウンロード", d, "crystal.obj", "text/plain")
+            else:
+                st.error("メッシュの生成に失敗しました。")
