@@ -1,3 +1,5 @@
+import streamlit as st
+
 st.set_page_config(page_title="3D化学模型メーカー", page_icon="🧪", layout="centered")
 
 st.title("🧪 3D化学模型メーカー (3Dプリント対応)")
