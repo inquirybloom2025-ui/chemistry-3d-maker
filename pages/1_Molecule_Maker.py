@@ -50,13 +50,36 @@ st.set_page_config(page_title="分子模型メーカー", page_icon="🧬", layo
 st.title("🧬 分子模型メーカー")
 mode = st.sidebar.radio("検索モード", ["代表的な分子", "キーワード検索"])
 atoms=None; name_display=""
-PRESET_DATA = {"Water": "Water (水 H2O)", "Carbon dioxide": "Carbon dioxide (CO2)", "Ammonia": "Ammonia (NH3)", "Methane": "Methane (CH4)", "Ethanol": "Ethanol (エタノール)", "Benzene": "Benzene (ベンゼン)"}
 
 if mode == "代表的な分子":
-    sel = st.sidebar.selectbox("物質名", list(PRESET_DATA.values()))
-    tgt = [k for k, v in PRESET_DATA.items() if v == sel][0]
-    try: atoms=molecule(tgt); atoms.center(); name_display=tgt
-    except: pass
+    sel = st.sidebar.selectbox("物質名", ["Water (水 H2O)", "Carbon dioxide (CO2)", "Ammonia (NH3)", "Methane (CH4)", "Ethanol (エタノール)", "Benzene (ベンゼン)"])
+    
+    # ASEの標準ライブラリ名への変換
+    ase_names = {
+        "Water (水 H2O)": "H2O",
+        "Carbon dioxide (CO2)": "CO2",
+        "Ammonia (NH3)": "NH3",
+        "Methane (CH4)": "CH4",
+        "Benzene (ベンゼン)": "C6H6"
+    }
+    
+    try:
+        if sel in ase_names:
+            atoms = molecule(ase_names[sel])
+        else:
+            # エタノールなどASEに無いものはPubChemから取得
+            q = "Ethanol" if "Ethanol" in sel else sel
+            cids = pcp.get_cids(q, 'name', record_type='3d')
+            if cids:
+                compound = pcp.Compound.from_cid(cids[0], record_type='3d')
+                symbols = [a.element for a in compound.atoms]; positions = [(a.x, a.y, a.z) for a in compound.atoms]
+                atoms = Atoms(symbols=symbols, positions=positions)
+        
+        if atoms:
+            atoms.center(); name_display = sel
+    except Exception:
+        st.error("モデルの生成に失敗しました。")
+
 elif mode == "キーワード検索":
     inp = st.sidebar.text_input("物質名を入力"); q = translate_input(inp)
     if q:
@@ -87,4 +110,6 @@ if atoms:
                 if mesh:
                     p = "molecule.obj"; mesh.export(p, file_type='obj')
                     with open(p, "r") as f: d = f.read()
-                    st.success("完了！"); st.download_button("OBJダウンロード", d, f"{name_display}.obj", "text/plain")
+                    st.success("完了！"); st.download_button("OBJダウンロード", d, "molecule.obj", "text/plain")
+else:
+    st.info("👈 左のメニューから物質を選択するか、検索してください（データが見つかるとここに作成ボタンが出現します）")
