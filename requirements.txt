@@ -7,3 +7,4 @@ matplotlib
 deep-translator
 scipy
 networkx
+shapely
