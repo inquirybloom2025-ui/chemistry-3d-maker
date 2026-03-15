@@ -1,169 +1,91 @@
+app_code = r"""
 import streamlit as st
 import numpy as np
 import trimesh
 
 # --- 1. 格子の枠（フレーム）を作成する関数 ---
-def create_lattice_frame(width, height, depth, thickness=0.2):
-    """格子の外周に細いシリンダーの枠を作る"""
+def create_lattice_frame(w, h, d, thickness=0.1):
+    """指定されたサイズの立方体枠を作成"""
     lines = [
-        ([0,0,0], [width,0,0]), ([0,0,0], [0,height,0]), ([0,0,0], [0,0,depth]),
-        ([width,height,depth], [0,height,depth]), ([width,height,depth], [width,0,depth]), ([width,height,depth], [width,height,0]),
-        ([width,0,0], [width,height,0]), ([width,0,0], [width,0,depth]),
-        ([0,height,0], [width,height,0]), ([0,height,0], [0,height,depth]),
-        ([0,0,depth], [width,0,depth]), ([0,0,depth], [0,height,depth])
+        ([0,0,0], [w,0,0]), ([0,0,0], [0,h,0]), ([0,0,0], [0,0,d]),
+        ([w,h,d], [0,h,d]), ([w,h,d], [w,0,d]), ([w,h,d], [w,h,0]),
+        ([w,0,0], [w,h,0]), ([w,0,0], [w,0,d]),
+        ([0,h,0], [w,h,0]), ([0,h,0], [0,h,d]),
+        ([0,0,d], [w,0,d]), ([0,0,d], [0,h,d])
     ]
-    frame_meshes = []
-    for start, end in lines:
-        p1 = np.array(start); p2 = np.array(end)
-        vec = p2 - p1
-        length = np.linalg.norm(vec)
-        if length < 1e-6: continue
-
+    meshes = []
+    for s, e in lines:
+        v = np.array(e) - np.array(s)
+        length = np.linalg.norm(v)
         cyl = trimesh.creation.cylinder(radius=thickness, height=length, sections=8)
-        z = np.array([0, 0, 1])
-        ax = np.cross(z, vec)
-        if np.linalg.norm(ax) < 1e-6:
-            rot = np.eye(4) if vec[2] > 0 else trimesh.transformations.rotation_matrix(np.pi, [1, 0, 0])
-        else:
-            ang = np.arccos(np.dot(z, vec) / length)
-            rot = trimesh.transformations.rotation_matrix(ang, ax)
+        # 回転と配置
+        rot = trimesh.geometry.align_vectors([0, 0, 1], v)
+        cyl.apply_transform(rot)
+        cyl.apply_translation(np.array(s) + v/2)
+        meshes.append(cyl)
+    return trimesh.util.concatenate(meshes)
 
-        cyl.apply_transform(trimesh.transformations.translation_matrix((p1 + p2) / 2) @ rot)
-        frame_meshes.append(cyl)
-    return trimesh.util.concatenate(frame_meshes) if frame_meshes else None
-
-# --- 2. 安全なスライス処理 ---
-def safe_slice(mesh, normal, origin):
-    if mesh is None or mesh.is_empty: return None
-    bounds = mesh.bounds
-    tol = 1e-4
-    if normal[0] == 1:
-        if bounds[0][0] >= origin[0] - tol: return mesh
-        if bounds[1][0] <= origin[0] + tol: return None
-    elif normal[0] == -1:
-        if bounds[1][0] <= origin[0] + tol: return mesh
-        if bounds[0][0] >= origin[0] - tol: return None
-    elif normal[1] == 1:
-        if bounds[0][1] >= origin[1] - tol: return mesh
-        if bounds[1][1] <= origin[1] + tol: return None
-    elif normal[1] == -1:
-        if bounds[1][1] <= origin[1] + tol: return mesh
-        if bounds[0][1] >= origin[1] - tol: return None
-    elif normal[2] == 1:
-        if bounds[0][2] >= origin[2] - tol: return mesh
-        if bounds[1][2] <= origin[2] + tol: return None
-    elif normal[2] == -1:
-        if bounds[1][2] <= origin[2] + tol: return mesh
-        if bounds[0][2] >= origin[2] - tol: return None
-    return trimesh.intersections.slice_mesh_plane(mesh, plane_normal=normal, plane_origin=origin, cap=True)
-
-# --- 3. 結晶モデル生成のメイン関数 ---
-def create_advanced_model(c_type, style, scale, do_cut, bond_thickness_ratio):
+# --- 2. 結晶構造の生成 (繰り返し対応) ---
+def generate_crystal(c_type, style, scale, repeat):
+    nx, ny, nz = repeat
     meshes = []
     a = scale
+    r_main = a * 0.15
+    r_sub = a * 0.10
     
-    # 枠線の太さは結合棒より少しだけ細く設定
-    thickness = a * (bond_thickness_ratio * 0.8) 
-    is_space_filling = (style == "Space Filling (充填 - 棒なし)")
-
-    atoms_data = []
-
-    if "NaCl" in c_type:
-        r_big = 0.28 * a if is_space_filling else 0.15 * a
-        r_small = 0.22 * a if is_space_filling else 0.10 * a
-        for x in [0, 0.5, 1]:
-            for y in [0, 0.5, 1]:
-                for z in [0, 0.5, 1]:
-                    is_cl = ((x*2 + y*2 + z*2) % 2 == 0)
-                    r = r_big if is_cl else r_small
-                    atoms_data.append(([x*a, y*a, z*a], r))
-        nn_dist = 0.5 * a
-
-    elif "BCC" in c_type:
-        r = (np.sqrt(3)/4)*a if is_space_filling else 0.15*a
-        coords = [[0,0,0], [1,0,0], [0,1,0], [0,0,1], [1,1,0], [1,0,1], [0,1,1], [1,1,1], [0.5,0.5,0.5]]
-        for c in coords:
-            atoms_data.append(([c[0]*a, c[1]*a, c[2]*a], r))
-        nn_dist = (np.sqrt(3)/2) * a
-
-    elif "FCC" in c_type:
-        r = (np.sqrt(2)/4)*a if is_space_filling else 0.15*a
-        coords = [[0,0,0], [1,0,0], [0,1,0], [0,0,1], [1,1,0], [1,0,1], [0,1,1], [1,1,1],
-                  [0.5,0.5,0], [0.5,0.5,1], [0.5,0,0.5], [0.5,1,0.5], [0,0.5,0.5], [1,0.5,0.5]]
-        for c in coords:
-            atoms_data.append(([c[0]*a, c[1]*a, c[2]*a], r))
-        nn_dist = (np.sqrt(2)/2) * a
-
-    for pos, r in atoms_data:
-        mesh = trimesh.creation.icosphere(subdivisions=4 if is_space_filling else 3, radius=r)
-        rot_hack = trimesh.transformations.rotation_matrix(0.123, [1, 1, 1])
-        mesh.apply_transform(rot_hack)
-        mesh.apply_translation(pos)
-        
-        if do_cut:
-            mesh = safe_slice(mesh, [1,0,0], [0,0,0])
-            mesh = safe_slice(mesh, [-1,0,0], [a,0,0])
-            mesh = safe_slice(mesh, [0,1,0], [0,0,0])
-            mesh = safe_slice(mesh, [0,-1,0], [0,a,0])
-            mesh = safe_slice(mesh, [0,0,1], [0,0,0])
-            mesh = safe_slice(mesh, [0,0,-1], [0,0,a])
-        
-        if mesh and not mesh.is_empty:
-            meshes.append(mesh)
-
-    if not is_space_filling:
-        # ユーザーがスライダーで設定した細さを適用
-        bond_radius = a * bond_thickness_ratio
-        num_atoms = len(atoms_data)
-        for i in range(num_atoms):
-            for j in range(i+1, num_atoms):
-                p1 = np.array(atoms_data[i][0])
-                p2 = np.array(atoms_data[j][0])
-                dist = np.linalg.norm(p2 - p1)
+    # 繰り返しループ
+    for ix in range(nx):
+        for iy in range(ny):
+            for iz in range(nz):
+                offset = np.array([ix, iy, iz]) * a
                 
-                if abs(dist - nn_dist) < 1e-3:
-                    cyl = trimesh.creation.cylinder(radius=bond_radius, height=dist, sections=10)
-                    vec = p2 - p1
-                    z_axis = np.array([0,0,1])
-                    ax = np.cross(z_axis, vec)
-                    if np.linalg.norm(ax) < 1e-6:
-                        rot = np.eye(4) if vec[2] > 0 else trimesh.transformations.rotation_matrix(np.pi, [1,0,0])
-                    else:
-                        ang = np.arccos(np.dot(z_axis, vec) / dist)
-                        rot = trimesh.transformations.rotation_matrix(ang, ax)
-                    
-                    cyl.apply_transform(trimesh.transformations.translation_matrix((p1 + p2) / 2) @ rot)
-                    meshes.append(cyl)
+                # --- NaCl (塩化ナトリウム) ---
+                if "NaCl" in c_type:
+                    # 4x4x4の格子点（単位格子内の全原子）
+                    for dx in [0, 0.5]:
+                        for dy in [0, 0.5]:
+                            for dz in [0, 0.5]:
+                                pos = (np.array([dx, dy, dz]) * a) + offset
+                                # イオンの判定
+                                is_cl = (round(dx*2) + round(dy*2) + round(dz*2)) % 2 == 0
+                                r = r_main if is_cl else r_sub
+                                atom = trimesh.creation.icosphere(subdivisions=2, radius=r)
+                                atom.apply_translation(pos)
+                                meshes.append(atom)
 
-    frame = create_lattice_frame(a, a, a, thickness)
-    if frame: meshes.append(frame)
+                # --- BCC (体心立方) ---
+                elif "BCC" in c_type:
+                    points = [[0,0,0], [0.5,0.5,0.5]]
+                    for p in points:
+                        atom = trimesh.creation.icosphere(subdivisions=2, radius=r_main)
+                        atom.apply_translation(np.array(p)*a + offset)
+                        meshes.append(atom)
 
-    if not meshes: return None
-    combined = trimesh.util.concatenate(meshes)
-    try: combined.fix_normals()
-    except: pass
-    return combined
+                # --- FCC (面心立方) ---
+                elif "FCC" in c_type:
+                    points = [[0,0,0], [0.5,0.5,0], [0.5,0,0.5], [0,0.5,0.5]]
+                    for p in points:
+                        atom = trimesh.creation.icosphere(subdivisions=2, radius=r_main)
+                        atom.apply_translation(np.array(p)*a + offset)
+                        meshes.append(atom)
 
-# --- UI (Streamlit) ---
-st.title("🧪 教科書完全準拠：結晶モデルメーカー")
+    # 全体を囲う枠を追加 (バラバラ防止)
+    frame = create_lattice_frame(a*nx, a*ny, a*nz, thickness=a*0.05)
+    meshes.append(frame)
+    
+    return trimesh.util.concatenate(meshes)
+
+# --- UI ---
+st.title("💎 繰り返し結晶モデル生成 (枠付き)")
 c_type = st.selectbox("結晶構造", ["NaCl (塩化ナトリウム)", "BCC (体心立方)", "FCC (面心立方)"])
-style = st.radio("スタイル", ["Space Filling (充填 - 棒なし)", "Ball and Stick (球棒 - 棒あり)"])
+repeat_n = st.slider("繰り返し回数 (x, y, z共通)", 1, 3, 2)
 
-# 棒ありの時だけ「細さ調整スライダー」を表示
-if style == "Ball and Stick (球棒 - 棒あり)":
-    st.markdown("---")
-    bond_thickness = st.slider("棒と枠線の太さ（※細くしすぎると3Dプリント時に折れるので注意）", 
-                               min_value=0.01, max_value=0.06, value=0.02, step=0.005)
-else:
-    bond_thickness = 0.02
-
-if st.button("3Dモデル(OBJ)を生成"):
-    with st.spinner("メッシュ構築中（面のカット処理を行っています）..."):
-        full_mesh = create_advanced_model(c_type, style, 10.0, True, bond_thickness)
-        if full_mesh and not full_mesh.is_empty:
-            full_mesh.export("model.obj")
-            st.success("モデルが完成しました！")
-            with open("model.obj", "rb") as f:
-                st.download_button("📥 OBJファイルをダウンロード", f, file_name="crystal_model.obj")
-        else:
-            st.error("メッシュの生成に失敗しました。")
+if st.button("3Dモデル作成"):
+    with st.spinner("構築中..."):
+        mesh = generate_crystal(c_type, "Standard", 10.0, [repeat_n, repeat_n, repeat_n])
+        mesh.export("crystal.obj")
+        st.success(f"{repeat_n}x{repeat_n}x{repeat_n} の格子を作成しました")
+        st.download_button("📥 OBJダウンロード", open("crystal.obj","rb"), file_name="crystal.obj")
+"""
+with open("app.py", "w", encoding="utf-8") as f:
+    f.write(app_code)
