@@ -1,145 +1,135 @@
 import streamlit as st
 import numpy as np
 import trimesh
-from ase import Atoms
-from ase.build import bulk
-from ase.neighborlist import neighbor_list
-from ase.data import vdw_radii, atomic_numbers
-import matplotlib.pyplot as plt
-from ase.visualize.plot import plot_atoms
 
-# --- 鉄や銅など、半径データが無い金属のための安全な取得関数 ---
-def get_safe_radius(symbol):
-    anum = atomic_numbers.get(symbol, 6)
-    base_r = vdw_radii[anum]
-    if base_r is None or np.isnan(base_r):
-        # データがない場合は金属結合半径などにフォールバック
-        fallbacks = {'Fe': 1.4, 'Cu': 1.4, 'Mg': 1.6, 'Na': 1.8, 'Cl': 1.75, 'Cs': 2.6}
-        return fallbacks.get(symbol, 1.5)
-    return base_r
+# --- 1. 格子の枠（フレーム）を作成する関数 ---
+def create_lattice_frame(width, height, depth, thickness=0.2):
+    """格子の外周に細いシリンダーの枠を作る"""
+    lines = [
+        ([0,0,0], [width,0,0]), ([0,0,0], [0,height,0]), ([0,0,0], [0,0,depth]),
+        ([width,height,depth], [0,height,depth]), ([width,height,depth], [width,0,depth]), ([width,height,depth], [width,height,0]),
+        ([width,0,0], [width,height,0]), ([width,0,0], [width,0,depth]),
+        ([0,height,0], [width,height,0]), ([0,height,0], [0,height,depth]),
+        ([0,0,depth], [width,0,depth]), ([0,0,depth], [0,height,depth])
+    ]
+    frame_meshes = []
+    for start, end in lines:
+        p1 = np.array(start)
+        p2 = np.array(end)
+        vec = p2 - p1
+        length = np.linalg.norm(vec)
+        if length < 1e-6: continue
 
-def trim_mesh_to_box(mesh, box_size):
+        # 最初から正しい長さでシリンダーを作成
+        cyl = trimesh.creation.cylinder(radius=thickness, height=length, sections=8)
+        
+        # 安全な回転処理
+        z = np.array([0, 0, 1])
+        ax = np.cross(z, vec)
+        if np.linalg.norm(ax) < 1e-6:
+            rot = np.eye(4) if vec[2] > 0 else trimesh.transformations.rotation_matrix(np.pi, [1, 0, 0])
+        else:
+            ang = np.arccos(np.dot(z, vec) / length)
+            rot = trimesh.transformations.rotation_matrix(ang, ax)
+
+        # 回転と中心への移動を同時に適用
+        cyl.apply_transform(trimesh.transformations.translation_matrix((p1 + p2) / 2) @ rot)
+        frame_meshes.append(cyl)
+
+    return trimesh.util.concatenate(frame_meshes) if frame_meshes else None
+
+# --- 2. 原子パーツ作成 (スライス対応) ---
+def get_oriented_part(radius, pos, box_w, box_h, box_d, do_cut):
     try:
-        if mesh is None or mesh.is_empty: return None
-        bounds = mesh.bounds; tol = 1e-4
-        if (bounds[0][0]>=-tol and bounds[1][0]<=box_size[0]+tol and bounds[0][1]>=-tol and bounds[1][1]<=box_size[1]+tol and bounds[0][2]>=-tol and bounds[1][2]<=box_size[2]+tol): return mesh
-        mesh = trimesh.intersections.slice_mesh_plane(mesh, plane_normal=[1,0,0], plane_origin=[0,0,0], cap=True)
-        mesh = trimesh.intersections.slice_mesh_plane(mesh, plane_normal=[-1,0,0], plane_origin=[box_size[0],0,0], cap=True)
-        mesh = trimesh.intersections.slice_mesh_plane(mesh, plane_normal=[0,1,0], plane_origin=[0,0,0], cap=True)
-        mesh = trimesh.intersections.slice_mesh_plane(mesh, plane_normal=[0,-1,0], plane_origin=[0,box_size[1],0], cap=True)
-        mesh = trimesh.intersections.slice_mesh_plane(mesh, plane_normal=[0,0,1], plane_origin=[0,0,0], cap=True)
-        mesh = trimesh.intersections.slice_mesh_plane(mesh, plane_normal=[0,0,-1], plane_origin=[0,0,box_size[2]], cap=True)
-        return mesh if not mesh.is_empty else None
-    except: return None
+        # 分割数（subdivisions）を3にして滑らかさを確保
+        mesh = trimesh.creation.icosphere(subdivisions=3, radius=radius)
+        mesh.apply_translation(pos)
+        
+        if not do_cut: return mesh
+        
+        # 正しいカット処理（plane_originは必ず [x, y, z] の座標配列にする）
+        cut_planes = [
+            ([1, 0, 0], [0, 0, 0]),
+            ([-1, 0, 0], [box_w, 0, 0]),
+            ([0, 1, 0], [0, 0, 0]),
+            ([0, -1, 0], [0, box_h, 0]),
+            ([0, 0, 1], [0, 0, 0]),
+            ([0, 0, -1], [0, 0, box_d])
+        ]
+        
+        for normal, origin in cut_planes:
+            mesh = trimesh.intersections.slice_mesh_plane(mesh, plane_normal=normal, plane_origin=origin, cap=True)
+            # カットの途中で空っぽになったらNoneを返す
+            if mesh is None or mesh.is_empty:
+                return None
+                
+        return mesh
+    except Exception:
+        # 計算エラーが起きた場合は安全にスキップ
+        return None
 
-def create_unit_cell_frame(box_size, scale):
-    try:
-        x, y, z = box_size; r = 0.015 * scale 
-        edges = [([0,0,0],[x,0,0]),([0,0,0],[0,y,0]),([0,0,0],[0,0,z]),([x,0,0],[x,y,0]),([x,0,0],[x,0,z]),([0,y,0],[x,y,0]),([0,y,0],[0,y,z]),([0,0,z],[x,0,z]),([0,0,z],[0,y,z]),([x,y,0],[x,y,z]),([x,0,z],[x,y,z]),([0,y,z],[x,y,z])]
-        meshes = []
-        for s, e in edges:
-            p1=np.array(s); p2=np.array(e); vec=p2-p1; ln=np.linalg.norm(vec)
-            if ln>1e-6:
-                cyl=trimesh.creation.cylinder(radius=r, height=ln, sections=8); ax=np.cross([0,0,1],vec)
-                rot=trimesh.transformations.rotation_matrix(np.arccos(np.dot([0,0,1],vec)/ln),ax) if np.linalg.norm(ax)>1e-6 else np.eye(4)
-                cyl.apply_transform(trimesh.transformations.translation_matrix((p1+p2)/2) @ rot); meshes.append(cyl)
-        return trimesh.util.concatenate(meshes) if meshes else None
-    except: return None
-
-def create_crystal_mesh(atoms, style, scale, atom_r_scale, bond_r, cut_cell, show_cell_frame):
-    target_cell = atoms.get_cell().diagonal() * scale 
-    exp_atoms = atoms.repeat((2, 2, 2))
-    positions = exp_atoms.get_positions() * scale; symbols = exp_atoms.get_chemical_symbols()
+def create_advanced_model(c_type, style, scale, do_cut):
     meshes = []
-    
-    is_space_filling = (style == "Space Filling (充填)")
+    a = scale
+    thickness = a * 0.03 # 枠の太さ
 
-    for pos, symbol in zip(positions, symbols):
-        margin = 0.1 * scale
-        if not (-margin<=pos[0]<=target_cell[0]+margin and -margin<=pos[1]<=target_cell[1]+margin and -margin<=pos[2]<=target_cell[2]+margin): continue
-        
-        base_r = get_safe_radius(symbol)
-        r = base_r * scale * atom_r_scale if is_space_filling else (0.25 if symbol=='H' else 0.4)*scale*atom_r_scale
-        subdiv = 4 if (cut_cell and is_space_filling) else 3
-        sphere = trimesh.creation.icosphere(subdivisions=subdiv, radius=r); sphere.apply_translation(pos)
-        
-        if is_space_filling and cut_cell:
-            trimmed = trim_mesh_to_box(sphere, target_cell)
-            if trimmed: meshes.append(trimmed)
-        else: meshes.append(sphere)
+    # 結晶構造ごとの原子配置
+    if "NaCl" in c_type:
+        r_cl, r_na = (0.23*a, 0.15*a) if style == "Space Filling (充填)" else (0.15*a, 0.10*a)
+        for x in [0, 0.5, 1]:
+            for y in [0, 0.5, 1]:
+                for z in [0, 0.5, 1]:
+                    r = r_cl if (round(x*2)+round(y*2)+round(z*2)) % 2 == 0 else r_na
+                    p = get_oriented_part(r, [x*a, y*a, z*a], a, a, a, do_cut)
+                    if p and not p.is_empty: meshes.append(p)
+        frame = create_lattice_frame(a, a, a, thickness)
+        if frame: meshes.append(frame)
 
-    if not is_space_filling:
-        cutoff = 2.9 if "Fe" in symbols or "Cu" in symbols else (3.2 if "Na" in symbols else (4.3 if "Cs" in symbols else 1.7))
-        i_l, j_l, d_l = neighbor_list('ijd', exp_atoms, cutoff=cutoff)
-        bond_set = set(); [bond_set.add((i, j)) for i, j in zip(i_l, j_l) if i < j]
-        for i, j in bond_set:
-            p1=positions[i]; p2=positions[j]; mid=(p1+p2)/2; m = 0.8*scale
-            if not (-m<=mid[0]<=target_cell[0]+m and -m<=mid[1]<=target_cell[1]+m and -m<=mid[2]<=target_cell[2]+m): continue
-            vec=p2-p1; ln=np.linalg.norm(vec)
-            if ln>1e-6:
-                cyl=trimesh.creation.cylinder(radius=bond_r*scale, height=ln, sections=10); ax=np.cross([0,0,1],vec)
-                rot=trimesh.transformations.rotation_matrix(np.arccos(np.dot([0,0,1],vec)/ln),ax) if np.linalg.norm(ax)>1e-6 else np.eye(4)
-                cyl.apply_transform(trimesh.transformations.translation_matrix((p1+p2)/2) @ rot)
-                if cut_cell:
-                    trimmed = trim_mesh_to_box(cyl, target_cell)
-                    if trimmed: meshes.append(trimmed)
-                else: meshes.append(cyl)
+    elif "BCC" in c_type:
+        r = (np.sqrt(3)/4)*a if style == "Space Filling (充填)" else 0.15*a
+        for c in [[0.5,0.5,0.5], [0,0,0], [1,0,0], [0,1,0], [0,0,1], [1,1,0], [1,0,1], [0,1,1], [1,1,1]]:
+            p = get_oriented_part(r, np.array(c)*a, a, a, a, do_cut)
+            if p and not p.is_empty: meshes.append(p)
+        frame = create_lattice_frame(a, a, a, thickness)
+        if frame: meshes.append(frame)
 
-    if not meshes: return None
+    elif "FCC" in c_type:
+        r = (np.sqrt(2)/4)*a if style == "Space Filling (充填)" else 0.15*a
+        coords = [[0,0,0], [1,0,0], [0,1,0], [0,0,1], [1,1,0], [1,0,1], [0,1,1], [1,1,1],
+                  [0.5,0.5,0], [0.5,0.5,1], [0.5,0,0.5], [0.5,1,0.5], [0,0.5,0.5], [1,0.5,0.5]]
+        for c in coords:
+            p = get_oriented_part(r, np.array(c)*a, a, a, a, do_cut)
+            if p and not p.is_empty: meshes.append(p)
+        frame = create_lattice_frame(a, a, a, thickness)
+        if frame: meshes.append(frame)
+
+    else:
+        # 汎用枠
+        r = 0.15*a
+        p = get_oriented_part(r, [0.5*a, 0.5*a, 0.5*a], a, a, a, do_cut)
+        if p and not p.is_empty: meshes.append(p)
+        frame = create_lattice_frame(a, a, a, thickness)
+        if frame: meshes.append(frame)
+
+    if not meshes:
+        return None
+
     combined = trimesh.util.concatenate(meshes)
-    if show_cell_frame:
-        frame = create_unit_cell_frame(target_cell, scale)
-        if frame: combined = trimesh.util.concatenate([combined, frame])
     try: combined.fix_normals()
     except: pass
     return combined
 
-st.set_page_config(page_title="単位格子メーカー", page_icon="🧊", layout="wide")
-st.title("🧊 単位格子メーカー (結晶構造)")
-st.sidebar.header("1. 物質を選ぶ")
-PRESET = {"Iron (鉄/BCC)": ('Fe','bcc',2.866), "Copper (銅/FCC)": ('Cu','fcc',3.615), "Magnesium (マグネシウム/HCP)": ('Mg','hcp',3.21,5.21), "Sodium chloride (NaCl)": ('NaCl','rocksalt',5.64), "Cesium chloride (CsCl)": ('CsCl','cesiumchloride',4.123), "Silicon (ケイ素)": ('Si','diamond',5.43)}
-sel = st.sidebar.selectbox("結晶を選択", list(PRESET.keys()))
+# --- UI (Streamlit) ---
+st.title("🧪 枠付き結晶モデルメーカー")
+c_type = st.selectbox("結晶構造", ["NaCl (塩化ナトリウム)", "BCC (体心立方)", "FCC (面心立方)"])
+style = st.radio("スタイル", ["Space Filling (充填)", "Ball and Stick (球棒)"])
 
-if sel == "Magnesium (マグネシウム/HCP)": atoms = bulk(PRESET[sel][0], PRESET[sel][1], a=PRESET[sel][2], c=PRESET[sel][3], orthorhombic=True)
-else: atoms = bulk(PRESET[sel][0], PRESET[sel][1], a=PRESET[sel][2], cubic=True)
-
-st.sidebar.header("2. モデル設定")
-style = st.sidebar.selectbox("スタイル", ["Ball and Stick (球棒)", "Space Filling (充填)"])
-scale = st.sidebar.slider("サイズ倍率", 5.0, 15.0, 10.0)
-frame = False; cut = True; atom_s = 1.0; bond_r = 0.0
-if style == "Ball and Stick (球棒)":
-    bond_r = st.sidebar.slider("棒の太さ", 0.05, 0.30, 0.15)
-    frame = st.sidebar.checkbox("単位格子の枠を表示", value=True)
-    cut = st.sidebar.checkbox("枠からはみ出た結合をカット", value=True)
-else:
-    atom_s = st.sidebar.slider("原子の重なり", 0.9, 1.5, 1.1)
-    frame = st.sidebar.checkbox("単位格子の枠を表示", value=False)
-    cut = st.sidebar.checkbox("単位格子で切断 (教科書風)", value=True)
-
-c1, c2 = st.columns([1, 1])
-with c1:
-    st.subheader(sel)
-    try: 
-        fig, ax = plt.subplots()
-        ap=atoms.copy()
-        ap.rotate(15,'x'); ap.rotate(45,'y')
-        
-        # --- プレビュー画像をスタイルに連動させる修正 ---
-        if style == "Space Filling (充填)":
-            rad_list = [get_safe_radius(s) * atom_s * 0.5 for s in ap.get_chemical_symbols()]
-            plot_atoms(ap, ax, radii=np.array(rad_list), rotation=('0x,0y,0z'))
+if st.button("3Dモデル(OBJ)を生成"):
+    with st.spinner("メッシュ構築中..."):
+        full_mesh = create_advanced_model(c_type, style, 10.0, True)
+        if full_mesh and not full_mesh.is_empty:
+            full_mesh.export("model.obj")
+            st.success("枠付きモデルが完成しました！")
+            st.download_button("📥 OBJファイルをダウンロード", open("model.obj","rb"), file_name="crystal_model.obj")
         else:
-            plot_atoms(ap, ax, radii=0.4, rotation=('0x,0y,0z'))
-            
-        ax.set_axis_off(); st.pyplot(fig)
-    except: pass
-with c2:
-    if st.button("モデル作成 (OBJ形式)", type="primary"):
-        with st.spinner("計算中 (カット処理は重いです)..."):
-            mesh = create_crystal_mesh(atoms, style, scale, atom_s, bond_r, cut, frame)
-            if mesh:
-                p = "crystal.obj"; mesh.export(p, file_type='obj')
-                with open(p, "r") as f: d = f.read()
-                st.success("完了！"); st.download_button("OBJダウンロード", d, "crystal.obj", "text/plain")
-            else:
-                st.error("メッシュの生成に失敗しました。")
+            st.error("メッシュの生成に失敗しました。")
