@@ -149,8 +149,9 @@ def create_carbon_mesh(atoms, style, scale, atom_s, bond_thickness_ratio, cut_ce
     combined = trimesh.util.concatenate(meshes)
     
     if show_cell_frame and is_crystal:
-        thickness = scale * bond_thickness_ratio * 0.8
-        frame = create_lattice_frame(target_cell[0], target_cell[1], target_cell[2], thickness)
+        # 枠線は結合棒の「半分の細さ(0.5倍)」にして区別する
+        frame_thickness = scale * bond_thickness_ratio * 0.5
+        frame = create_lattice_frame(target_cell[0], target_cell[1], target_cell[2], frame_thickness)
         if frame: combined = trimesh.util.concatenate([combined, frame])
         
     try: combined.fix_normals()
@@ -186,10 +187,11 @@ elif sel == "Fullerene (フラーレン C60)":
 
 style = st.sidebar.selectbox("スタイル", ["Ball and Stick (球棒)", "Space Filling (充填)"])
 scale = st.sidebar.slider("サイズ倍率", 5.0, 15.0, 10.0)
-frame = False; cut = False; atom_s = 1.0; bond_thickness = 0.02
+frame = False; cut = False; atom_s = 1.0; bond_thickness = 0.04
 
 if style == "Ball and Stick (球棒)":
-    bond_thickness = st.sidebar.slider("棒と枠線の太さ", min_value=0.01, max_value=0.06, value=0.02, step=0.005)
+    # デフォルトの太さを0.04に変更し、説明文も分かりやすく修正
+    bond_thickness = st.sidebar.slider("結合棒の太さ（※枠線は自動でこの半分の細さになります）", min_value=0.01, max_value=0.08, value=0.04, step=0.005)
     if is_crystal:
         frame = st.sidebar.checkbox("単位格子の外枠を表示", value=True)
         cut = st.sidebar.checkbox("枠からはみ出た結合をカット", value=True)
