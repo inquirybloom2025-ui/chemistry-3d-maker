@@ -62,8 +62,8 @@ def create_advanced_model(c_type, style, scale, do_cut, bond_thickness_ratio):
     meshes = []
     a = scale
     
-    # 枠線の太さは結合棒より少しだけ細く設定
-    thickness = a * (bond_thickness_ratio * 0.8) 
+    # 枠線の太さは結合棒の半分(0.5倍)に設定
+    thickness = a * bond_thickness_ratio * 0.5 
     is_space_filling = (style == "Space Filling (充填 - 棒なし)")
 
     atoms_data = []
@@ -152,10 +152,10 @@ style = st.radio("スタイル", ["Space Filling (充填 - 棒なし)", "Ball an
 # 棒ありの時だけ「細さ調整スライダー」を表示
 if style == "Ball and Stick (球棒 - 棒あり)":
     st.markdown("---")
-    bond_thickness = st.slider("棒と枠線の太さ（※細くしすぎると3Dプリント時に折れるので注意）", 
-                               min_value=0.01, max_value=0.06, value=0.02, step=0.005)
+    bond_thickness = st.slider("結合棒の太さ（※枠線は自動でこの半分の細さになります）", 
+                               min_value=0.01, max_value=0.08, value=0.04, step=0.005)
 else:
-    bond_thickness = 0.02
+    bond_thickness = 0.04
 
 if st.button("3Dモデル(OBJ)を生成"):
     with st.spinner("メッシュ構築中（面のカット処理を行っています）..."):
