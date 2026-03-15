@@ -14,8 +14,7 @@ def create_lattice_frame(width, height, depth, thickness=0.2):
     ]
     frame_meshes = []
     for start, end in lines:
-        p1 = np.array(start)
-        p2 = np.array(end)
+        p1 = np.array(start); p2 = np.array(end)
         vec = p2 - p1
         length = np.linalg.norm(vec)
         if length < 1e-6: continue
@@ -38,34 +37,54 @@ def create_lattice_frame(width, height, depth, thickness=0.2):
 
     return trimesh.util.concatenate(frame_meshes) if frame_meshes else None
 
-# --- 2. 原子パーツ作成 (スライス対応) ---
+# --- 2. 安全なスライス処理（原子消失バグの防止） ---
+def safe_slice(mesh, normal, origin):
+    if mesh is None or mesh.is_empty: return None
+    bounds = mesh.bounds
+    tol = 1e-4
+    
+    # メッシュが完全に切断面の「内側（残す側）」にあるか、「外側（捨てる側）」にあるかを判定
+    if normal[0] == 1:
+        if bounds[0][0] >= origin[0] - tol: return mesh        # 完全に内側（切断不要）
+        if bounds[1][0] <= origin[0] + tol: return None        # 完全に外側（捨てる）
+    elif normal[0] == -1:
+        if bounds[1][0] <= origin[0] + tol: return mesh
+        if bounds[0][0] >= origin[0] - tol: return None
+    elif normal[1] == 1:
+        if bounds[0][1] >= origin[1] - tol: return mesh
+        if bounds[1][1] <= origin[1] + tol: return None
+    elif normal[1] == -1:
+        if bounds[1][1] <= origin[1] + tol: return mesh
+        if bounds[0][1] >= origin[1] - tol: return None
+    elif normal[2] == 1:
+        if bounds[0][2] >= origin[2] - tol: return mesh
+        if bounds[1][2] <= origin[2] + tol: return None
+    elif normal[2] == -1:
+        if bounds[1][2] <= origin[2] + tol: return mesh
+        if bounds[0][2] >= origin[2] - tol: return None
+
+    # 境界線をまたいでいる場合のみ、実際にスライス計算を実行
+    return trimesh.intersections.slice_mesh_plane(mesh, plane_normal=normal, plane_origin=origin, cap=True)
+
+# --- 3. 原子パーツ作成 ---
 def get_oriented_part(radius, pos, box_w, box_h, box_d, do_cut):
     try:
-        # 分割数（subdivisions）を3にして滑らかさを確保
+        # subdivisionsを3にして滑らかさを確保
         mesh = trimesh.creation.icosphere(subdivisions=3, radius=radius)
         mesh.apply_translation(pos)
         
         if not do_cut: return mesh
-        
-        # 正しいカット処理（plane_originは必ず [x, y, z] の座標配列にする）
-        cut_planes = [
-            ([1, 0, 0], [0, 0, 0]),
-            ([-1, 0, 0], [box_w, 0, 0]),
-            ([0, 1, 0], [0, 0, 0]),
-            ([0, -1, 0], [0, box_h, 0]),
-            ([0, 0, 1], [0, 0, 0]),
-            ([0, 0, -1], [0, 0, box_d])
-        ]
-        
-        for normal, origin in cut_planes:
-            mesh = trimesh.intersections.slice_mesh_plane(mesh, plane_normal=normal, plane_origin=origin, cap=True)
-            # カットの途中で空っぽになったらNoneを返す
-            if mesh is None or mesh.is_empty:
-                return None
-                
-        return mesh
+
+        # 6方向からの安全なスライス
+        mesh = safe_slice(mesh, [1,0,0], [0,0,0])
+        mesh = safe_slice(mesh, [-1,0,0], [box_w,0,0])
+        mesh = safe_slice(mesh, [0,1,0], [0,0,0])
+        mesh = safe_slice(mesh, [0,-1,0], [0,box_h,0])
+        mesh = safe_slice(mesh, [0,0,1], [0,0,0])
+        mesh = safe_slice(mesh, [0,0,-1], [0,0,box_d])
+
+        return mesh if (mesh and not mesh.is_empty) else None
     except Exception:
-        # 計算エラーが起きた場合は安全にスキップ
         return None
 
 def create_advanced_model(c_type, style, scale, do_cut):
@@ -81,7 +100,7 @@ def create_advanced_model(c_type, style, scale, do_cut):
                 for z in [0, 0.5, 1]:
                     r = r_cl if (round(x*2)+round(y*2)+round(z*2)) % 2 == 0 else r_na
                     p = get_oriented_part(r, [x*a, y*a, z*a], a, a, a, do_cut)
-                    if p and not p.is_empty: meshes.append(p)
+                    if p: meshes.append(p)
         frame = create_lattice_frame(a, a, a, thickness)
         if frame: meshes.append(frame)
 
@@ -89,7 +108,7 @@ def create_advanced_model(c_type, style, scale, do_cut):
         r = (np.sqrt(3)/4)*a if style == "Space Filling (充填)" else 0.15*a
         for c in [[0.5,0.5,0.5], [0,0,0], [1,0,0], [0,1,0], [0,0,1], [1,1,0], [1,0,1], [0,1,1], [1,1,1]]:
             p = get_oriented_part(r, np.array(c)*a, a, a, a, do_cut)
-            if p and not p.is_empty: meshes.append(p)
+            if p: meshes.append(p)
         frame = create_lattice_frame(a, a, a, thickness)
         if frame: meshes.append(frame)
 
@@ -99,15 +118,7 @@ def create_advanced_model(c_type, style, scale, do_cut):
                   [0.5,0.5,0], [0.5,0.5,1], [0.5,0,0.5], [0.5,1,0.5], [0,0.5,0.5], [1,0.5,0.5]]
         for c in coords:
             p = get_oriented_part(r, np.array(c)*a, a, a, a, do_cut)
-            if p and not p.is_empty: meshes.append(p)
-        frame = create_lattice_frame(a, a, a, thickness)
-        if frame: meshes.append(frame)
-
-    else:
-        # 汎用枠
-        r = 0.15*a
-        p = get_oriented_part(r, [0.5*a, 0.5*a, 0.5*a], a, a, a, do_cut)
-        if p and not p.is_empty: meshes.append(p)
+            if p: meshes.append(p)
         frame = create_lattice_frame(a, a, a, thickness)
         if frame: meshes.append(frame)
 
@@ -130,6 +141,7 @@ if st.button("3Dモデル(OBJ)を生成"):
         if full_mesh and not full_mesh.is_empty:
             full_mesh.export("model.obj")
             st.success("枠付きモデルが完成しました！")
-            st.download_button("📥 OBJファイルをダウンロード", open("model.obj","rb"), file_name="crystal_model.obj")
+            with open("model.obj", "rb") as f:
+                st.download_button("📥 OBJファイルをダウンロード", f, file_name="crystal_model.obj")
         else:
             st.error("メッシュの生成に失敗しました。")
