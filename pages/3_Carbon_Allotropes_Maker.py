@@ -191,7 +191,7 @@ frame = False; cut = False; atom_s = 1.0; bond_thickness = 0.04
 
 if style == "Ball and Stick (球棒)":
     # デフォルトの太さを0.04に変更し、説明文も分かりやすく修正
-    bond_thickness = st.sidebar.slider("結合棒の太さ（※枠線は自動でこの半分の細さになります）", min_value=0.01, max_value=0.08, value=0.04, step=0.005)
+    bond_thickness = st.sidebar.slider("結合棒の太さ（※枠線は自動でこの半分の細さになります）", min_value=0.05, max_value=0.30, value=0.12, step=0.01)
     if is_crystal:
         frame = st.sidebar.checkbox("単位格子の外枠を表示", value=True)
         cut = st.sidebar.checkbox("枠からはみ出た結合をカット", value=True)
