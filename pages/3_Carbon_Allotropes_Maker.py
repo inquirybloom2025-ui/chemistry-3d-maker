@@ -8,12 +8,6 @@ from ase.data import vdw_radii, atomic_numbers
 import matplotlib.pyplot as plt
 from ase.visualize.plot import plot_atoms
 
-def create_manual_graphite():
-    a = 2.461; c = 6.708; b_ortho = a * np.sqrt(3)
-    positions = [[0.0, 0.0, 0.0], [a/2, b_ortho/6, 0.0], [0.0, b_ortho/3, c/2], [a/2, b_ortho/2, c/2]]
-    atoms = Atoms(symbols='C4', positions=positions, cell=[a, b_ortho, c], pbc=True)
-    return atoms
-
 def create_lattice_frame(width, height, depth, thickness=0.2):
     lines = [
         ([0,0,0], [width,0,0]), ([0,0,0], [0,height,0]), ([0,0,0], [0,0,depth]),
@@ -162,8 +156,8 @@ def create_carbon_mesh(atoms, style, scale, atom_s, bond_thickness_ratio, cut_ce
 st.set_page_config(page_title="炭素の同素体メーカー", page_icon="💎", layout="wide")
 st.title("💎 炭素の同素体メーカー")
 
-sel = st.sidebar.selectbox("物質を選ぶ", ["Diamond (ダイヤモンド)", "Graphite (黒鉛)", "Fullerene (フラーレン C60)", "Carbon Nanotube (カーボンナノチューブ)"])
-is_crystal = (sel in ["Diamond (ダイヤモンド)", "Graphite (黒鉛)"])
+sel = st.sidebar.selectbox("物質を選ぶ", ["Diamond (ダイヤモンド)", "Fullerene (フラーレン C60)", "Carbon Nanotube (カーボンナノチューブ)"])
+is_crystal = (sel == "Diamond (ダイヤモンド)")
 is_nanotube = (sel == "Carbon Nanotube (カーボンナノチューブ)")
 
 st.sidebar.header("モデル設定")
@@ -179,15 +173,10 @@ if sel == "Diamond (ダイヤモンド)":
     atoms = bulk('C', 'diamond', a=3.567, cubic=True)
     if rep > 1: atoms = atoms.repeat((rep, rep, rep))
     atoms.center()
-elif sel == "Graphite (黒鉛)": 
-    atoms = create_manual_graphite()
-    if rep > 1: atoms = atoms.repeat((rep, rep, rep))
-    atoms.center()
 elif sel == "Fullerene (フラーレン C60)": 
     atoms = molecule('C60')
     atoms.center()
 elif sel == "Carbon Nanotube (カーボンナノチューブ)":
-    # アームチェア型 (6,6) のナノチューブを生成
     atoms = nanotube(6, 6, length=rep)
     atoms.center()
 
